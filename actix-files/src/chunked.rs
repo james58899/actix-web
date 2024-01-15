@@ -7,7 +7,6 @@ use std::{
 };
 
 use actix_web::{error::Error, web::Bytes};
-#[cfg(feature = "experimental-io-uring")]
 use bytes::BytesMut;
 use futures_core::{ready, Stream};
 use pin_project_lite::pin_project;
@@ -27,17 +26,6 @@ pin_project! {
     }
 }
 
-#[cfg(not(feature = "experimental-io-uring"))]
-pin_project! {
-    #[project = ChunkedReadFileStateProj]
-    #[project_replace = ChunkedReadFileStateProjReplace]
-    enum ChunkedReadFileState<Fut> {
-        File { file: Option<File>, },
-        Future { #[pin] fut: Fut },
-    }
-}
-
-#[cfg(feature = "experimental-io-uring")]
 pin_project! {
     #[project = ChunkedReadFileStateProj]
     #[project_replace = ChunkedReadFileStateProjReplace]
@@ -61,9 +49,6 @@ pub(crate) fn new_chunked_read(
     ChunkedReadFile {
         size,
         offset,
-        #[cfg(not(feature = "experimental-io-uring"))]
-        state: ChunkedReadFileState::File { file: Some(file) },
-        #[cfg(feature = "experimental-io-uring")]
         state: ChunkedReadFileState::File {
             file: Some((file, BytesMut::new())),
         },
@@ -77,20 +62,23 @@ async fn chunked_read_file_callback(
     mut file: File,
     offset: u64,
     max_bytes: usize,
-) -> Result<(File, Bytes), Error> {
+    mut bytes_mut: BytesMut,
+) -> Result<(File, Bytes, BytesMut), Error> {
+    use bytes::BufMut;
     use io::{Read as _, Seek as _};
 
     let res = actix_web::web::block(move || {
-        let mut buf = Vec::with_capacity(max_bytes);
+        bytes_mut.put_bytes(0, max_bytes);
 
         file.seek(io::SeekFrom::Start(offset))?;
 
-        let n_bytes = file.by_ref().take(max_bytes as u64).read_to_end(&mut buf)?;
+        let n_bytes = file.by_ref().take(max_bytes as u64).read(&mut bytes_mut)?;
+        bytes_mut.truncate(n_bytes);
 
         if n_bytes == 0 {
             Err(io::Error::from(io::ErrorKind::UnexpectedEof))
         } else {
-            Ok((file, Bytes::from(buf)))
+            Ok((file, bytes_mut.split().freeze(), bytes_mut))
         }
     })
     .await??;
@@ -171,8 +159,8 @@ where
 #[cfg(not(feature = "experimental-io-uring"))]
 impl<F, Fut> Stream for ChunkedReadFile<F, Fut>
 where
-    F: Fn(File, u64, usize) -> Fut,
-    Fut: Future<Output = Result<(File, Bytes), Error>>,
+    F: Fn(File, u64, usize, BytesMut) -> Fut,
+    Fut: Future<Output = Result<(File, Bytes, BytesMut), Error>>,
 {
     type Item = Result<Bytes, Error>;
 
@@ -189,11 +177,11 @@ where
                 } else {
                     let max_bytes = cmp::min(size.saturating_sub(counter), 65_536) as usize;
 
-                    let file = file
+                    let (file, bytes_mut) = file
                         .take()
                         .expect("ChunkedReadFile polled after completion");
 
-                    let fut = (this.callback)(file, offset, max_bytes);
+                    let fut = (this.callback)(file, offset, max_bytes, bytes_mut);
 
                     this.state
                         .project_replace(ChunkedReadFileState::Future { fut });
@@ -202,10 +190,11 @@ where
                 }
             }
             ChunkedReadFileStateProj::Future { fut } => {
-                let (file, bytes) = ready!(fut.poll(cx))?;
+                let (file, bytes, bytes_mut) = ready!(fut.poll(cx))?;
 
-                this.state
-                    .project_replace(ChunkedReadFileState::File { file: Some(file) });
+                this.state.project_replace(ChunkedReadFileState::File {
+                    file: Some((file, bytes_mut)),
+                });
 
                 *this.offset += bytes.len() as u64;
                 *this.counter += bytes.len() as u64;
