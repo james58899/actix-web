@@ -67,6 +67,10 @@ async fn chunked_read_file_callback(
     use bytes::BufMut;
     use io::{Read as _, Seek as _};
 
+    if !bytes_mut.is_empty() {
+        return Ok((file, bytes_mut.split_to(cmp::min(8192, bytes_mut.len())).freeze(), bytes_mut))
+    }
+
     let res = actix_web::web::block(move || {
         bytes_mut.put_bytes(0, max_bytes);
 
@@ -78,7 +82,7 @@ async fn chunked_read_file_callback(
         if n_bytes == 0 {
             Err(io::Error::from(io::ErrorKind::UnexpectedEof))
         } else {
-            Ok((file, bytes_mut.split().freeze(), bytes_mut))
+            Ok((file, bytes_mut.split_to(cmp::min(8192, bytes_mut.len())).freeze(), bytes_mut))
         }
     })
     .await??;
@@ -93,6 +97,10 @@ async fn chunked_read_file_callback(
     max_bytes: usize,
     mut bytes_mut: BytesMut,
 ) -> io::Result<(File, Bytes, BytesMut)> {
+    if !bytes_mut.is_empty() {
+        return Ok((file, bytes_mut.split_to(cmp::min(8192, bytes_mut.len())).freeze(), bytes_mut))
+    }
+
     bytes_mut.reserve(max_bytes);
 
     let (res, mut bytes_mut) = file.read_at(bytes_mut, offset).await;
@@ -102,7 +110,7 @@ async fn chunked_read_file_callback(
         return Err(io::ErrorKind::UnexpectedEof.into());
     }
 
-    let bytes = bytes_mut.split_to(n_bytes).freeze();
+    let bytes = bytes_mut.split_to(cmp::min(8192, bytes_mut.len())).freeze();
 
     Ok((file, bytes, bytes_mut))
 }
