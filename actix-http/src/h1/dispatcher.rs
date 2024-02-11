@@ -491,38 +491,33 @@ where
                 }
 
                 StateProj::SendPayload { mut body } => {
-                    // keep populate writer buffer until buffer size limit hit,
-                    // get blocked or finished.
-                    while this.write_buf.len() < super::payload::MAX_BUFFER_SIZE {
-                        match body.as_mut().poll_next(cx) {
-                            Poll::Ready(Some(Ok(item))) => {
-                                this.codec
-                                    .encode(Message::Chunk(Some(item)), this.write_buf)?;
-                            }
-
-                            Poll::Ready(None) => {
-                                this.codec.encode(Message::Chunk(None), this.write_buf)?;
-
-                                // payload stream finished.
-                                // set state to None and handle next message
-                                this.state.set(State::None);
-                                this.flags.insert(Flags::FINISHED);
-
-                                continue 'res;
-                            }
-
-                            Poll::Ready(Some(Err(err))) => {
-                                let err = err.into();
-                                tracing::error!("Response payload stream error: {err:?}");
-                                this.flags.insert(Flags::FINISHED);
-                                return Err(DispatchError::Body(err));
-                            }
-
-                            Poll::Pending => return Ok(PollResponse::DoNothing),
+                    match body.as_mut().poll_next(cx) {
+                        Poll::Ready(Some(Ok(item))) => {
+                            this.codec
+                                .encode(Message::Chunk(Some(item)), this.write_buf)?;
                         }
+
+                        Poll::Ready(None) => {
+                            this.codec.encode(Message::Chunk(None), this.write_buf)?;
+
+                            // payload stream finished.
+                            // set state to None and handle next message
+                            this.state.set(State::None);
+                            this.flags.insert(Flags::FINISHED);
+
+                            continue 'res;
+                        }
+
+                        Poll::Ready(Some(Err(err))) => {
+                            let err = err.into();
+                            tracing::error!("Response payload stream error: {err:?}");
+                            this.flags.insert(Flags::FINISHED);
+                            return Err(DispatchError::Body(err));
+                        }
+
+                        Poll::Pending => return Ok(PollResponse::DoNothing),
                     }
 
-                    // buffer is beyond max size
                     // return and try to write the whole buffer to I/O stream.
                     return Ok(PollResponse::DrainWriteBuf);
                 }
@@ -530,39 +525,34 @@ where
                 StateProj::SendErrorPayload { mut body } => {
                     // TODO: de-dupe impl with SendPayload
 
-                    // keep populate writer buffer until buffer size limit hit,
-                    // get blocked or finished.
-                    while this.write_buf.len() < super::payload::MAX_BUFFER_SIZE {
-                        match body.as_mut().poll_next(cx) {
-                            Poll::Ready(Some(Ok(item))) => {
-                                this.codec
-                                    .encode(Message::Chunk(Some(item)), this.write_buf)?;
-                            }
-
-                            Poll::Ready(None) => {
-                                this.codec.encode(Message::Chunk(None), this.write_buf)?;
-
-                                // payload stream finished
-                                // set state to None and handle next message
-                                this.state.set(State::None);
-                                this.flags.insert(Flags::FINISHED);
-
-                                continue 'res;
-                            }
-
-                            Poll::Ready(Some(Err(err))) => {
-                                tracing::error!("Response payload stream error: {err:?}");
-                                this.flags.insert(Flags::FINISHED);
-                                return Err(DispatchError::Body(
-                                    Error::new_body().with_cause(err).into(),
-                                ));
-                            }
-
-                            Poll::Pending => return Ok(PollResponse::DoNothing),
+                    match body.as_mut().poll_next(cx) {
+                        Poll::Ready(Some(Ok(item))) => {
+                            this.codec
+                                .encode(Message::Chunk(Some(item)), this.write_buf)?;
                         }
+
+                        Poll::Ready(None) => {
+                            this.codec.encode(Message::Chunk(None), this.write_buf)?;
+
+                            // payload stream finished
+                            // set state to None and handle next message
+                            this.state.set(State::None);
+                            this.flags.insert(Flags::FINISHED);
+
+                            continue 'res;
+                        }
+
+                        Poll::Ready(Some(Err(err))) => {
+                            tracing::error!("Response payload stream error: {err:?}");
+                            this.flags.insert(Flags::FINISHED);
+                            return Err(DispatchError::Body(
+                                Error::new_body().with_cause(err).into(),
+                            ));
+                        }
+
+                        Poll::Pending => return Ok(PollResponse::DoNothing),
                     }
 
-                    // buffer is beyond max size
                     // return and try to write the whole buffer to stream
                     return Ok(PollResponse::DrainWriteBuf);
                 }
